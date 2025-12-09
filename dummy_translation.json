@@ -1,0 +1,19 @@
+{
+    "paragraphs": [
+        {
+            "id": "para_000",
+            "text": "This is a standard paragraph.",
+            "translated_text": "【翻訳】This is a standard paragraph. (Translated)"
+        },
+        {
+            "id": "para_001",
+            "text": "This paragraph has a comment.Check this.",
+            "translated_text": "【翻訳】This paragraph has a comment. Check this."
+        },
+        {
+            "id": "para_002",
+            "text": "This line has inserted text.",
+            "translated_text": "【翻訳】This line has inserted text."
+        }
+    ]
+}
