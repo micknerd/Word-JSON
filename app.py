@@ -46,8 +46,23 @@ if uploaded_file is not None:
         # Step 2: Translate
         with st.status("Step 2: Translating with Claude 3 Opus...", expanded=True) as status:
             try:
-                # Load context/glossary if available (future feature)
-                translations = translate_segments(parsed_data)
+                # Mock Mode logic
+                if os.environ.get("MOCK_MODE", "false").lower() == "true":
+                    st.warning("Running in MOCK MODE (No AWS Connection)")
+                    import time
+                    time.sleep(2) # Simulate delay
+                    translations = {
+                        "paragraphs": [
+                            {"id": p["id"], "translated_text": f"[Mock Translation] {p['original_text']}", "ai_generated_comments": []} 
+                            for p in parsed_data.get("segments", [])
+                        ]
+                    }
+                    # Sprinkle some red text for demo
+                    if translations["paragraphs"]:
+                        translations["paragraphs"][0]["ai_generated_comments"] = ["Mock alert: Please verify this term."]
+                else:
+                    # Real Translation
+                    translations = translate_segments(parsed_data)
                 
                 if not translations:
                     st.error("Translation returned empty result.")
