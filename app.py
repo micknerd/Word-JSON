@@ -37,7 +37,7 @@ if uploaded_file is not None:
         with st.status("Step 1: Parsing Document...", expanded=True) as status:
             try:
                 parsed_data = parse_document(input_path)
-                st.write(f"Parsed {len(parsed_data.get('segments', []))} segments.")
+                st.write(f"Parsed {len(parsed_data.get('paragraphs', []))} paragraphs.")
                 status.update(label="Parsing Complete", state="complete")
             except Exception as e:
                 st.error(f"Parsing failed: {e}")
@@ -53,8 +53,8 @@ if uploaded_file is not None:
                     time.sleep(2) # Simulate delay
                     translations = {
                         "paragraphs": [
-                            {"id": p["id"], "translated_text": f"[Mock Translation] {p['original_text']}", "ai_generated_comments": []} 
-                            for p in parsed_data.get("segments", [])
+                            {"id": p["id"], "translated_text": f"[Mock Translation] {p['text']}", "ai_generated_comments": []}
+                            for p in parsed_data.get("paragraphs", [])
                         ]
                     }
                     # Sprinkle some red text for demo
