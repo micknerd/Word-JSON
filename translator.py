@@ -7,6 +7,41 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+def _normalize_translation(input_data, model_output):
+    """
+    Align model output with required schema, guaranteeing translated_text and
+    ai_generated_comments for each input paragraph.
+    """
+    paragraphs_in = input_data.get("paragraphs", []) if isinstance(input_data, dict) else []
+    output_paras = {}
+    if isinstance(model_output, dict):
+        for item in model_output.get("paragraphs", []):
+            pid = item.get("id")
+            if pid:
+                output_paras[pid] = item
+
+    normalized = []
+    for para in paragraphs_in:
+        pid = para.get("id")
+        base_text = para.get("text", "")
+        translated_text = base_text
+        ai_comments = []
+
+        if pid and pid in output_paras:
+            candidate = output_paras[pid]
+            translated_text = candidate.get("translated_text") or candidate.get("text") or base_text
+            ai_comments = candidate.get("ai_generated_comments") or candidate.get("comments") or []
+
+        normalized.append({
+            "id": pid,
+            "text": base_text,
+            "comments": para.get("comments", []),
+            "translated_text": translated_text,
+            "ai_generated_comments": ai_comments
+        })
+
+    return {"paragraphs": normalized}
+
 def get_bedrock_client():
     """Initializes Bedrock Runtime client."""
     # Assuming credentials are in env vars or ~/.aws/credentials
@@ -82,7 +117,15 @@ Translate the 'text' field in each paragraph. Ensure all numeric conversions and
         
         response_body = json.loads(response.get('body').read())
         # Claude 3 response structure
-        result_text = response_body.get('content')[0].get('text')
+        content_list = response_body.get('content', [])
+        if not content_list or not isinstance(content_list, list):
+            print("Unexpected Bedrock response: missing content", file=sys.stderr)
+            return _normalize_translation(data, {})
+
+        result_text = content_list[0].get('text')
+        if not result_text:
+            print("Unexpected Bedrock response: empty text payload", file=sys.stderr)
+            return _normalize_translation(data, {})
         
         # Parse the JSON from the text response
         # Claude might wrap it in ```json ... ``` or just text.
@@ -90,15 +133,20 @@ Translate the 'text' field in each paragraph. Ensure all numeric conversions and
         end = result_text.rfind('}') + 1
         if start != -1 and end != -1:
             json_str = result_text[start:end]
-            return json.loads(json_str)
+            try:
+                model_json = json.loads(json_str)
+            except json.JSONDecodeError as decode_err:
+                print(f"Failed to decode model JSON: {decode_err}", file=sys.stderr)
+                return _normalize_translation(data, {})
+            return _normalize_translation(data, model_json)
         else:
             print("Could not find JSON in response", file=sys.stderr)
             print(result_text, file=sys.stderr)
-            return None
+            return _normalize_translation(data, {})
 
     except Exception as e:
         print(f"Bedrock Translation failed: {e}", file=sys.stderr)
-        return None
+        return _normalize_translation(data, {})
 
 if __name__ == "__main__":
     # Test stub

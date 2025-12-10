@@ -1,30 +1,136 @@
 import json
-import shutil
-import zipfile
 import os
-import tempfile
-from lxml import etree
-
-NAMESPACES = {
-    'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-}
-
-import json
-import shutil
-import zipfile
-import os
-import tempfile
 import random
+import shutil
 import string
+import tempfile
+import zipfile
 from lxml import etree
 
 NAMESPACES = {
     'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
     'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 }
+REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+COMMENTS_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments"
+COMMENTS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"
 
 def generate_id():
     return "".join(random.choices(string.digits, k=5))
+
+def ensure_comments_part(temp_dir):
+    """
+    Ensures comments.xml exists and is referenced from document rels and content types.
+    Returns tuple (comments_tree, comments_root, existing_comment_ids).
+    """
+    comments_xml_path = os.path.join(temp_dir, 'word', 'comments.xml')
+    doc_rels_path = os.path.join(temp_dir, 'word', '_rels', 'document.xml.rels')
+    content_types_path = os.path.join(temp_dir, '[Content_Types].xml')
+
+    existing_comment_ids = set()
+
+    # Load or create comments.xml
+    if os.path.exists(comments_xml_path):
+        comments_tree = etree.parse(comments_xml_path)
+        comments_root = comments_tree.getroot()
+        for c in comments_root.xpath('//w:comment', namespaces=NAMESPACES):
+            existing_comment_ids.add(c.get(f"{{{NAMESPACES['w']}}}id"))
+    else:
+        comments_root = etree.Element(f"{{{NAMESPACES['w']}}}comments", nsmap=NAMESPACES)
+        comments_tree = etree.ElementTree(comments_root)
+        os.makedirs(os.path.dirname(comments_xml_path), exist_ok=True)
+
+    # Ensure relationship from document.xml to comments.xml
+    os.makedirs(os.path.dirname(doc_rels_path), exist_ok=True)
+    if os.path.exists(doc_rels_path):
+        rels_tree = etree.parse(doc_rels_path)
+        rels_root = rels_tree.getroot()
+    else:
+        rels_root = etree.Element("Relationships", nsmap={None: REL_NS})
+        rels_tree = etree.ElementTree(rels_root)
+
+    existing_rel = rels_root.xpath(f"./rels:Relationship[@Type='{COMMENTS_REL_TYPE}']",
+                                   namespaces={'rels': REL_NS})
+    if existing_rel:
+        rel_id = existing_rel[0].get("Id")
+    else:
+        # Generate unique rId
+        used_ids = {r.get("Id") for r in rels_root.xpath("./rels:Relationship", namespaces={'rels': REL_NS})}
+        idx = 1000
+        rel_id = f"rId{idx}"
+        while rel_id in used_ids:
+            idx += 1
+            rel_id = f"rId{idx}"
+        rel_el = etree.SubElement(rels_root, "Relationship")
+        rel_el.set("Id", rel_id)
+        rel_el.set("Type", COMMENTS_REL_TYPE)
+        rel_el.set("Target", "comments.xml")
+
+    rels_tree.write(doc_rels_path, encoding='UTF-8', xml_declaration=True, standalone="yes")
+
+    # Ensure [Content_Types].xml override for comments
+    if os.path.exists(content_types_path):
+        ct_tree = etree.parse(content_types_path)
+        ct_root = ct_tree.getroot()
+    else:
+        ct_root = etree.Element("Types", nsmap=None)
+        ct_root.set("xmlns", "http://schemas.openxmlformats.org/package/2006/content-types")
+        ct_tree = etree.ElementTree(ct_root)
+
+    ct_ns = {"ct": "http://schemas.openxmlformats.org/package/2006/content-types"}
+    override_xpath = "./ct:Override[@PartName='/word/comments.xml']"
+    if not ct_root.xpath(override_xpath, namespaces=ct_ns):
+        override = etree.SubElement(ct_root, "Override")
+        override.set("PartName", "/word/comments.xml")
+        override.set("ContentType", COMMENTS_CONTENT_TYPE)
+
+    ct_tree.write(content_types_path, encoding='UTF-8', xml_declaration=True, standalone="yes")
+
+    return comments_tree, comments_root, existing_comment_ids
+
+def apply_text_to_runs(paragraph, new_text, color_val=None):
+    """
+    Replace paragraph text while preserving run structure/styling where possible.
+    Splits the new text evenly across existing text nodes; attaches color if provided.
+    """
+    text_nodes = paragraph.xpath('.//w:t', namespaces=NAMESPACES)
+    if not text_nodes:
+        return
+
+    total_nodes = len(text_nodes)
+    base = len(new_text) // total_nodes
+    extra = len(new_text) % total_nodes
+    pos = 0
+
+    for idx, t_node in enumerate(text_nodes):
+        take = base + (1 if idx < extra else 0)
+        segment = new_text[pos:pos + take]
+        pos += take
+        t_node.text = segment
+
+        parent_run = t_node.getparent()
+        if parent_run is not None and color_val:
+            rPr = parent_run.find(f"{{{NAMESPACES['w']}}}rPr")
+            if rPr is None:
+                rPr = etree.Element(f"{{{NAMESPACES['w']}}}rPr", nsmap=NAMESPACES)
+                parent_run.insert(0, rPr)
+            color_tag = rPr.find(f"{{{NAMESPACES['w']}}}color")
+            if color_tag is None:
+                color_tag = etree.Element(f"{{{NAMESPACES['w']}}}color", nsmap=NAMESPACES)
+                rPr.append(color_tag)
+            color_tag.set(f"{{{NAMESPACES['w']}}}val", color_val)
+
+    # If there is remaining text (happens when new_text longer than splits), append a new run
+    if pos < len(new_text):
+        remaining = new_text[pos:]
+        new_run = etree.Element(f"{{{NAMESPACES['w']}}}r", nsmap=NAMESPACES)
+        if color_val:
+            rPr = etree.SubElement(new_run, f"{{{NAMESPACES['w']}}}rPr", nsmap=NAMESPACES)
+            color_tag = etree.SubElement(rPr, f"{{{NAMESPACES['w']}}}color", nsmap=NAMESPACES)
+            color_tag.set(f"{{{NAMESPACES['w']}}}val", color_val)
+        new_t = etree.SubElement(new_run, f"{{{NAMESPACES['w']}}}t", nsmap=NAMESPACES)
+        new_t.text = remaining
+        paragraph.append(new_run)
 
 def reconstruct_docx(original_docx_path, translated_json_path, output_docx_path):
     """
@@ -47,19 +153,7 @@ def reconstruct_docx(original_docx_path, translated_json_path, output_docx_path)
         comments_xml_path = os.path.join(temp_dir, 'word', 'comments.xml')
         
         # 1. Update comments.xml if ai_generated_comments exist
-        existing_comment_ids = set()
-        comments_tree = None
-        comments_root = None
-        
-        if os.path.exists(comments_xml_path):
-            comments_tree = etree.parse(comments_xml_path)
-            comments_root = comments_tree.getroot()
-            for c in comments_root.xpath('//w:comment', namespaces=NAMESPACES):
-                existing_comment_ids.add(c.get(f"{{{NAMESPACES['w']}}}id"))
-        else:
-            # Create basic structure if not exists
-            comments_root = etree.Element(f"{{{NAMESPACES['w']}}}comments", nsmap=NAMESPACES)
-            comments_tree = etree.ElementTree(comments_root)
+        comments_tree, comments_root, existing_comment_ids = ensure_comments_part(temp_dir)
 
         # 2. Process Paragraphs
         doc_tree = etree.parse(doc_xml_path)
@@ -96,28 +190,7 @@ def reconstruct_docx(original_docx_path, translated_json_path, output_docx_path)
             if not text_nodes:
                 continue # Skip empty paragraphs
                 
-            # Update first node
-            first_t = text_nodes[0]
-            first_t.text = new_text
-            
-            # Find the parent <w:r> of this <w:t> to apply color
-            parent_run = first_t.getparent()
-            
-            if color_val:
-                rPr = parent_run.find(f"{{{NAMESPACES['w']}}}rPr")
-                if rPr is None:
-                    rPr = etree.Element(f"{{{NAMESPACES['w']}}}rPr", nsmap=NAMESPACES)
-                    parent_run.insert(0, rPr)
-                
-                color_tag = rPr.find(f"{{{NAMESPACES['w']}}}color")
-                if color_tag is None:
-                    color_tag = etree.Element(f"{{{NAMESPACES['w']}}}color", nsmap=NAMESPACES)
-                    rPr.append(color_tag)
-                color_tag.set(f"{{{NAMESPACES['w']}}}val", color_val)
-
-            # Clear other text nodes
-            for node in text_nodes[1:]:
-                node.text = ""
+            apply_text_to_runs(p, new_text, color_val=color_val)
 
             # --- Insert Comments ---
             if ai_comments:

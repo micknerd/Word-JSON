@@ -24,16 +24,20 @@ if uploaded_file is not None:
     if st.button("Start Translation"):
         with st.spinner("Processing... Please wait."):
             try:
+                tmp_paths = []
                 # Create temp files for processing
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_input:
                     tmp_input.write(uploaded_file.getvalue())
                     input_path = tmp_input.name
+                    tmp_paths.append(input_path)
 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp_json:
                     json_path = tmp_json.name
+                    tmp_paths.append(json_path)
                     
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_output:
                     output_path = tmp_output.name
+                    tmp_paths.append(output_path)
 
                 # 1. Parse
                 status_text = st.empty()
@@ -74,5 +78,11 @@ if uploaded_file is not None:
             except Exception as e:
                 st.error(f"An error occurred: {str(e)}")
             finally:
-                # Optional cleanup code here
-                pass
+                # Cleanup temp files
+                if 'tmp_paths' in locals():
+                    for p in tmp_paths:
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            # Best-effort cleanup
+                            continue
